@@ -1,0 +1,8 @@
+{
+  "name": "SAMH SWI Student Monitor",
+  "description": "Comprehensive student wellbeing monitoring system with multi-group dashboards, real-time sync across Firebase, SQL & Sheets, SWI AI Tutor, retrained risk scoring engine, and security certificate verification.",
+  "requestFramePermissions": [],
+  "majorCapabilities": [
+    "MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"
+  ]
+}

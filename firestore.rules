@@ -1,0 +1,231 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    // ===============================================================
+    // Helper Functions
+    // ===============================================================
+    
+    function isAuthenticated() {
+      return request.auth != null;
+    }
+
+    function isOwner(userId) {
+      return isAuthenticated() && request.auth.uid == userId;
+    }
+
+    // Get user data from the users collection
+    function getUserData() {
+      return get(/databases/$(database)/documents/users/$(request.auth.uid)).data;
+    }
+
+    // Check if user has a specific role
+    function hasRole(roleList) {
+      return isAuthenticated() && 
+             exists(/databases/$(database)/documents/users/$(request.auth.uid)) && 
+             get(/databases/$(database)/documents/users/$(request.auth.uid)).data.role in roleList;
+    }
+
+    function isAdmin() {
+      return isAuthenticated() && (
+        (request.auth.token.email == "kelronmosidila@gmail.com" && request.auth.token.email_verified == true) ||
+        (exists(/databases/$(database)/documents/users/$(request.auth.uid)) && 
+         get(/databases/$(database)/documents/users/$(request.auth.uid)).data.role in ['admin', 'G1_ADMIN', 'ministry', 'school_admin'])
+      );
+    }
+
+    function isTeacher() {
+      return isAuthenticated() && (
+        (request.auth.token.email == "kelronmosidila@gmail.com" && request.auth.token.email_verified == true) ||
+        (exists(/databases/$(database)/documents/users/$(request.auth.uid)) && 
+         get(/databases/$(database)/documents/users/$(request.auth.uid)).data.role in ['teacher', 'school_admin', 'admin', 'G1_ADMIN', 'ministry', 'counselor'])
+      );
+    }
+
+    function isDistrict() {
+      return isAuthenticated() && hasRole(['district', 'ministry', 'admin']);
+    }
+
+    function isCounselor() {
+      return isAuthenticated() && hasRole(['counselor', 'teacher', 'school_admin', 'admin']);
+    }
+
+    function isParent() {
+      return isAuthenticated() && hasRole(['parent']);
+    }
+
+    function isStudent() {
+      return isAuthenticated() && hasRole(['student']);
+    }
+
+    function getUsername() {
+      return getUserData().username;
+    }
+
+    // ===============================================================
+    // Collection Rules
+    // ===============================================================
+
+    // Users collection
+    match /users/{userId} {
+      allow read: if isAuthenticated();
+      allow write: if isAuthenticated() && (request.auth.uid == userId || isAdmin());
+    }
+
+    // User Preferences
+    match /user_preferences/{prefId} {
+      // Allow if the ID starts with the user's UID
+      // We use a more robust check here
+      allow read, write: if isAuthenticated() && (
+        prefId == request.auth.uid || 
+        prefId.split('_')[0] == request.auth.uid ||
+        prefId.split(':')[0] == request.auth.uid
+      );
+    }
+
+    // Students collection
+    match /students/{studentId} {
+      allow read: if isAuthenticated() && (
+        isAdmin() || isTeacher() || isDistrict() || isCounselor() ||
+        request.auth.uid == studentId ||
+        (exists(/databases/$(database)/documents/users/$(request.auth.uid)) && getUsername() == studentId)
+      );
+      allow write: if isTeacher() || isAdmin();
+    }
+
+    // Metrics collection
+    match /metrics/{metricId} {
+      allow read: if isAuthenticated() && (
+        isTeacher() || isCounselor() || isAdmin() || isDistrict() ||
+        request.auth.uid == resource.data.student_uid ||
+        (exists(/databases/$(database)/documents/users/$(request.auth.uid)) && getUsername() == resource.data.student_id) ||
+        (isParent() && (
+          resource.data.guardian_id == request.auth.uid || 
+          (exists(/databases/$(database)/documents/students/$(resource.data.student_id)) && 
+           get(/databases/$(database)/documents/students/$(resource.data.student_id)).data.guardian_id == request.auth.uid)
+        ))
+      );
+      allow write: if isTeacher() || isAdmin();
+    }
+
+    // Assignments collection
+    match /assignments/{assignmentId} {
+      allow read: if isAuthenticated();
+      allow write: if isTeacher() || isAdmin();
+    }
+
+    // Communications collection
+    match /communications/{commId} {
+      allow read: if isAuthenticated() && (
+        isTeacher() || isCounselor() || isAdmin() || isDistrict() ||
+        request.auth.uid == resource.data.sender_uid ||
+        request.auth.uid == resource.data.receiver_uid ||
+        (exists(/databases/$(database)/documents/users/$(request.auth.uid)) && 
+         (getUsername() == resource.data.sender_id || getUsername() == resource.data.receiver_id))
+      );
+      allow create: if isAuthenticated();
+      allow update, delete: if isAdmin() || (isAuthenticated() && request.auth.uid == resource.data.sender_uid);
+    }
+
+    // Attendance collection
+    match /attendance/{attendanceId} {
+      allow read: if isAuthenticated();
+      allow write: if isTeacher() || isAdmin();
+    }
+
+    // Student Data (Sensitive)
+    match /student_data/{studentId} {
+      allow read: if isAuthenticated() && (
+        isTeacher() || isCounselor() || isAdmin() || isDistrict() ||
+        request.auth.uid == studentId ||
+        (isParent() && exists(/databases/$(database)/documents/students/$(studentId)) && 
+         get(/databases/$(database)/documents/students/$(studentId)).data.guardian_id == request.auth.uid)
+      );
+      allow write: if isTeacher() || isAdmin();
+    }
+
+    // AI Interactions
+    match /ai_interactions/{interactionId} {
+      allow read: if isAuthenticated() && (
+        request.auth.uid == resource.data.student_uid || 
+        request.auth.uid == resource.data.user_id || 
+        (exists(/databases/$(database)/documents/users/$(request.auth.uid)) && 
+         get(/databases/$(database)/documents/users/$(request.auth.uid)).data.username == resource.data.student_id) ||
+        isAdmin() || 
+        isTeacher()
+      );
+      allow create: if isAuthenticated() && 
+                   request.resource.data.user_id == request.auth.uid &&
+                   request.resource.data.keys().hasAll(['student_id', 'user_query', 'ai_response', 'timestamp']);
+      allow update: if isAuthenticated() && (request.auth.uid == resource.data.user_id || isAdmin());
+      allow delete: if isAdmin();
+    }
+
+    // AI Guidance
+    match /ai_guidance/{guidanceId} {
+      allow read: if isAuthenticated();
+      allow write: if isTeacher() || isAdmin() || isCounselor();
+    }
+
+    // Incidents
+    match /incidents/{incidentId} {
+      allow read: if isAuthenticated() && (
+        isAdmin() || isTeacher() || isCounselor() || isDistrict() ||
+        request.auth.uid == resource.data.student_uid ||
+        (exists(/databases/$(database)/documents/users/$(request.auth.uid)) && getUsername() == resource.data.student_id) ||
+        (isParent() && (
+          resource.data.guardian_id == request.auth.uid ||
+          (exists(/databases/$(database)/documents/students/$(resource.data.student_id)) && 
+           get(/databases/$(database)/documents/students/$(resource.data.student_id)).data.guardian_id == request.auth.uid)
+        ))
+      );
+      allow write: if isTeacher() || isAdmin() || isCounselor();
+    }
+
+    // Districts
+    match /districts/{districtId} {
+      allow read: if isAuthenticated();
+      allow write: if isAdmin();
+    }
+
+    // Approvals
+    match /approvals/{approvalId} {
+      allow read: if isAuthenticated() && (isAdmin() || isDistrict() || isTeacher());
+      allow write: if isAuthenticated();
+    }
+
+    // Student Updates
+    match /student_updates/{id} {
+      allow read: if isAuthenticated() && (isTeacher() || isAdmin() || isDistrict());
+      allow create: if isTeacher() || isAdmin();
+      allow update, delete: if isAdmin();
+    }
+
+    // Chat Messages
+    match /chat_messages/{messageId} {
+      allow read: if isAuthenticated() && (
+        resource.data.sender_id == getUsername() || 
+        resource.data.receiver_id == getUsername()
+      );
+      allow create: if isAuthenticated() && 
+                   request.resource.data.sender_id == getUsername() &&
+                   request.resource.data.keys().hasAll(['sender_id', 'sender_name', 'receiver_id', 'content', 'timestamp']);
+      allow update: if isAuthenticated() && 
+                   resource.data.receiver_id == getUsername() &&
+                   request.resource.data.diff(resource.data).affectedKeys().hasOnly(['read']);
+    }
+
+    // Friendships
+    match /friendships/{friendshipId} {
+      allow read: if isAuthenticated() && (
+        resource.data.user_id == getUsername() || 
+        resource.data.friend_id == getUsername()
+      );
+      allow create: if isAuthenticated() && 
+                   request.resource.data.user_id == getUsername();
+      allow update, delete: if isAuthenticated() && (
+        resource.data.user_id == getUsername() || 
+        resource.data.friend_id == getUsername()
+      );
+    }
+  }
+}
